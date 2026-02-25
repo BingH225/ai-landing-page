@@ -1,11 +1,7 @@
 /**
  * LandingPageService
- * Handles all server-side logic for AI-powered landing page generation:
- *  1. Query the active theme
- *  2. Generate structured content via OpenAI
- *  3. Upload images to Shopify CDN via fileCreate
- *  4. Write OS 2.0 JSON template via themeFilesUpsert
- *  5. Create a Shopify Page resource linked to the template
+ * Generates AI-powered landing pages and publishes them as Shopify Pages.
+ * Approach: Generate HTML body directly — no theme modifications needed.
  */
 
 import OpenAI from "openai";
@@ -16,82 +12,34 @@ import { z } from "zod";
 export interface LandingPageInput {
   productName: string;
   sellingPoints: string;
-  imageUrl?: string; // optional external image URL to upload
+  imageUrl?: string;
 }
 
 export interface LandingPageResult {
   pageHandle: string;
   previewUrl: string;
-  templateSuffix: string;
 }
 
 // Zod schema for AI-generated content
 const LandingPageContentSchema = z.object({
-  headline: z.string().max(100),
-  subheadline: z.string().max(200),
-  ctaText: z.string().max(30),
-  bodyText: z.string().max(500),
-  heroImageAlt: z.string().max(100),
-  features: z.array(
-    z.object({
-      title: z.string().max(50),
-      description: z.string().max(150),
-    })
-  ).max(3),
+  headline: z.string().max(120),
+  subheadline: z.string().max(250),
+  ctaText: z.string().max(40),
+  bodyText: z.string().max(600),
+  heroImageAlt: z.string().max(120),
+  features: z
+    .array(
+      z.object({
+        title: z.string().max(60),
+        description: z.string().max(180),
+      })
+    )
+    .max(3),
 });
 
 type LandingPageContent = z.infer<typeof LandingPageContentSchema>;
 
-// ─── GraphQL Mutations ────────────────────────────────────────────────────────
-
-const GET_ACTIVE_THEME = `#graphql
-  query GetActiveTheme {
-    themes(first: 5, roles: [MAIN]) {
-      nodes {
-        id
-        name
-        role
-      }
-    }
-  }
-`;
-
-const THEME_FILES_UPSERT = `#graphql
-  mutation ThemeFilesUpsert($themeId: ID!, $files: [OnlineStoreThemeFilesUpsertFileInput!]!) {
-    themeFilesUpsert(themeId: $themeId, files: $files) {
-      upsertedThemeFiles {
-        filename
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
-
-const FILE_CREATE = `#graphql
-  mutation FileCreate($files: [FileCreateInput!]!) {
-    fileCreate(files: $files) {
-      files {
-        ... on MediaImage {
-          id
-          image {
-            url
-          }
-        }
-        ... on GenericFile {
-          id
-          url
-        }
-      }
-      userErrors {
-        field
-        message
-      }
-    }
-  }
-`;
+// ─── GraphQL ──────────────────────────────────────────────────────────────────
 
 const PAGE_CREATE = `#graphql
   mutation PageCreate($page: PageCreateInput!) {
@@ -100,7 +48,6 @@ const PAGE_CREATE = `#graphql
         id
         handle
         title
-        templateSuffix
       }
       userErrors {
         field
@@ -112,10 +59,6 @@ const PAGE_CREATE = `#graphql
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/**
- * Leaky Bucket retry wrapper for Shopify GraphQL calls.
- * Retries on THROTTLED errors with exponential back-off.
- */
 async function withRetry<T>(
   fn: () => Promise<T>,
   maxRetries = 5,
@@ -129,7 +72,9 @@ async function withRetry<T>(
       const msg = err instanceof Error ? err.message : String(err);
       if (msg.toLowerCase().includes("throttled") && attempt < maxRetries) {
         const delay = baseDelayMs * Math.pow(2, attempt);
-        console.warn(`[LandingPageService] Throttled, retrying in ${delay}ms (attempt ${attempt + 1})`);
+        console.warn(
+          `[LandingPageService] Throttled, retrying in ${delay}ms (attempt ${attempt + 1})`
+        );
         await new Promise((r) => setTimeout(r, delay));
         attempt++;
       } else {
@@ -150,49 +95,25 @@ export class LandingPageService {
     }
     this.openai = new OpenAI({
       apiKey: process.env.OPENAI_API_KEY,
-      // Support third-party OpenAI-compatible APIs (e.g. proxies, OpenRouter, etc.)
       ...(process.env.OPENAI_BASE_URL
         ? { baseURL: process.env.OPENAI_BASE_URL }
         : {}),
     });
   }
 
-  // ── 1. Get Active Theme ID ─────────────────────────────────────────────────
-
-  async getActiveThemeId(admin: { graphql: (query: string, opts?: Record<string, unknown>) => Promise<Response> }): Promise<string> {
-    const response = await withRetry(() => admin.graphql(GET_ACTIVE_THEME));
-    const json = await response.json() as {
-      data: {
-        themes: {
-          nodes: Array<{ id: string; name: string; role: string }>;
-        };
-      };
-    };
-
-    const themes = json.data?.themes?.nodes ?? [];
-    const mainTheme = themes.find((t) => t.role === "MAIN") ?? themes[0];
-
-    if (!mainTheme) {
-      throw new Error("No active theme found in this store.");
-    }
-
-    console.log(`[LandingPageService] Active theme: ${mainTheme.name} (${mainTheme.id})`);
-    return mainTheme.id;
-  }
-
-  // ── 2. Generate AI Content ─────────────────────────────────────────────────
+  // ── 1. Generate AI Content ──────────────────────────────────────────────────
 
   async generateContent(input: LandingPageInput): Promise<LandingPageContent> {
     const systemPrompt = `You are an expert e-commerce copywriter specializing in high-conversion landing pages.
 Output ONLY valid JSON matching this schema exactly (no markdown, no extra text):
 {
-  "headline": "string (max 100 chars)",
-  "subheadline": "string (max 200 chars)",
-  "ctaText": "string (max 30 chars)",
-  "bodyText": "string (max 500 chars)",
-  "heroImageAlt": "string (max 100 chars)",
+  "headline": "string (max 120 chars)",
+  "subheadline": "string (max 250 chars)",
+  "ctaText": "string (max 40 chars)",
+  "bodyText": "string (max 600 chars)",
+  "heroImageAlt": "string (max 120 chars)",
   "features": [
-    { "title": "string (max 50 chars)", "description": "string (max 150 chars)" }
+    { "title": "string (max 60 chars)", "description": "string (max 180 chars)" }
   ] (exactly 3 items)
 }`;
 
@@ -209,7 +130,7 @@ Write in a persuasive, modern marketing style. Output only valid JSON.`;
         { role: "user", content: userPrompt },
       ],
       temperature: 0.7,
-      max_tokens: 800,
+      max_tokens: 900,
       response_format: { type: "json_object" },
     });
 
@@ -219,161 +140,65 @@ Write in a persuasive, modern marketing style. Output only valid JSON.`;
       const parsed = JSON.parse(raw);
       return LandingPageContentSchema.parse(parsed);
     } catch (e) {
-      throw new Error(`AI returned invalid JSON schema: ${e}`);
+      throw new Error(`AI returned invalid JSON: ${e}`);
     }
   }
 
-  // ── 3. Upload Image to Shopify CDN ─────────────────────────────────────────
+  // ── 2. Build Styled HTML Body ───────────────────────────────────────────────
 
-  async uploadImageToShopify(
-    admin: { graphql: (query: string, opts?: Record<string, unknown>) => Promise<Response> },
-    imageUrl: string,
-    altText: string
-  ): Promise<string> {
-    const response = await withRetry(() =>
-      admin.graphql(FILE_CREATE, {
-        variables: {
-          files: [
-            {
-              originalSource: imageUrl,
-              alt: altText,
-              contentType: "IMAGE",
-            },
-          ],
-        },
-      })
-    );
+  private buildPageHtml(content: LandingPageContent, imageUrl?: string): string {
+    const featuresHtml = content.features
+      .map(
+        (f) => `
+      <div style="flex:1;min-width:220px;background:#f9fafb;border-radius:12px;padding:28px;box-shadow:0 1px 4px rgba(0,0,0,.08);">
+        <h3 style="margin:0 0 10px;font-size:18px;font-weight:700;color:#111;">${f.title}</h3>
+        <p style="margin:0;color:#555;line-height:1.7;font-size:15px;">${f.description}</p>
+      </div>`
+      )
+      .join("");
 
-    const json = await response.json() as {
-      data: {
-        fileCreate: {
-          files: Array<{ id?: string; image?: { url: string }; url?: string }>;
-          userErrors: Array<{ field: string; message: string }>;
-        };
-      };
-    };
+    const heroImageHtml = imageUrl
+      ? `<img src="${imageUrl}" alt="${content.heroImageAlt}" style="width:100%;max-height:520px;object-fit:cover;border-radius:16px;margin-bottom:48px;">`
+      : "";
 
-    const errors = json.data?.fileCreate?.userErrors ?? [];
-    if (errors.length > 0) {
-      throw new Error(`fileCreate errors: ${JSON.stringify(errors)}`);
-    }
+    return `
+<div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,sans-serif;max-width:860px;margin:0 auto;padding:48px 24px;color:#111;">
 
-    const file = json.data?.fileCreate?.files?.[0];
-    const cdnUrl = (file as { image?: { url: string }; url?: string })?.image?.url ?? (file as { url?: string })?.url;
+  <!-- Hero Image -->
+  ${heroImageHtml}
 
-    if (!cdnUrl) {
-      throw new Error("Image upload succeeded but no CDN URL was returned.");
-    }
+  <!-- Hero Copy -->
+  <div style="text-align:center;margin-bottom:56px;">
+    <h1 style="font-size:clamp(28px,5vw,54px);font-weight:800;margin:0 0 20px;line-height:1.15;letter-spacing:-0.5px;">${content.headline}</h1>
+    <p style="font-size:19px;color:#555;max-width:620px;margin:0 auto 32px;line-height:1.75;">${content.subheadline}</p>
+    <a href="#buy" style="display:inline-block;background:#111;color:#fff;padding:16px 40px;border-radius:10px;font-size:16px;font-weight:700;text-decoration:none;letter-spacing:.2px;transition:opacity .2s;">${content.ctaText}</a>
+  </div>
 
-    console.log(`[LandingPageService] Image uploaded to: ${cdnUrl}`);
-    return cdnUrl;
+  <!-- Body Text -->
+  <p style="font-size:17px;line-height:1.85;color:#333;margin-bottom:56px;text-align:center;max-width:720px;margin-left:auto;margin-right:auto;">${content.bodyText}</p>
+
+  <!-- Features -->
+  <h2 style="font-size:30px;font-weight:700;margin-bottom:28px;text-align:center;">Why Choose Us</h2>
+  <div style="display:flex;flex-wrap:wrap;gap:20px;margin-bottom:56px;justify-content:center;">
+    ${featuresHtml}
+  </div>
+
+  <!-- CTA Banner -->
+  <div style="text-align:center;padding:48px 32px;background:linear-gradient(135deg,#667eea 0%,#764ba2 100%);border-radius:20px;color:#fff;">
+    <h2 style="margin:0 0 14px;font-size:30px;font-weight:800;">${content.headline}</h2>
+    <p style="margin:0 0 28px;opacity:.9;font-size:17px;line-height:1.6;">${content.subheadline}</p>
+    <a id="buy" href="#" style="display:inline-block;background:#fff;color:#764ba2;padding:16px 40px;border-radius:10px;font-size:16px;font-weight:800;text-decoration:none;">${content.ctaText}</a>
+  </div>
+
+</div>`;
   }
 
-  // ── 4. Build OS 2.0 JSON Template ─────────────────────────────────────────
-
-  private buildTemplateJson(content: LandingPageContent, imageUrl?: string): string {
-    const sections: Record<string, unknown> = {
-      "ai-hero-banner": {
-        type: "image-with-text",
-        settings: {
-          heading: content.headline,
-          text: content.subheadline,
-          button_label: content.ctaText,
-          ...(imageUrl ? { image: imageUrl } : {}),
-        },
-      },
-      "ai-body-text": {
-        type: "rich-text",
-        settings: {
-          heading: "",
-          text: `<p>${content.bodyText}</p>`,
-        },
-      },
-      "ai-features": {
-        type: "multicolumn",
-        settings: {
-          title: "Why Choose Us",
-        },
-        blocks: content.features.reduce(
-          (acc, feature, idx) => {
-            acc[`feature-${idx}`] = {
-              type: "column",
-              settings: {
-                title: feature.title,
-                text: feature.description,
-              },
-            };
-            return acc;
-          },
-          {} as Record<string, unknown>
-        ),
-        block_order: content.features.map((_, idx) => `feature-${idx}`),
-      },
-    };
-
-    return JSON.stringify(
-      {
-        sections,
-        order: ["ai-hero-banner", "ai-body-text", "ai-features"],
-      },
-      null,
-      2
-    );
-  }
-
-  // ── 5. Deploy Theme Template via REST Asset API ──────────────────────────
-  // Note: themeFilesUpsert GraphQL requires a Shopify exemption.
-  // The REST Asset API has no such requirement and works for development stores.
-
-  async deployThemeTemplate(
-    shop: string,
-    accessToken: string,
-    themeId: string,
-    templateSuffix: string,
-    content: LandingPageContent,
-    imageUrl?: string
-  ): Promise<void> {
-    const templateJson = this.buildTemplateJson(content, imageUrl);
-    const assetKey = `templates/page.${templateSuffix}.json`;
-
-    // Extract numeric ID from GQL GID: "gid://shopify/OnlineStoreTheme/186086293783" → "186086293783"
-    const numericThemeId = themeId.split("/").pop();
-    if (!numericThemeId) throw new Error(`Invalid theme GID: ${themeId}`);
-
-    const url = `https://${shop}/admin/api/2026-04/themes/${numericThemeId}/assets.json`;
-
-    const response = await withRetry(async () => {
-      const res = await fetch(url, {
-        method: "PUT",
-        headers: {
-          "X-Shopify-Access-Token": accessToken,
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          asset: {
-            key: assetKey,
-            value: templateJson,
-          },
-        }),
-      });
-      if (res.status === 429) throw new Error("throttled");
-      return res;
-    });
-
-    if (!response.ok) {
-      const body = await response.text();
-      throw new Error(`REST Asset API error ${response.status}: ${body}`);
-    }
-
-    console.log(`[LandingPageService] Theme asset created via REST: ${assetKey}`);
-  }
-
-  // ── 6. Create Page Resource ────────────────────────────────────────────────
+  // ── 3. Create Shopify Page ──────────────────────────────────────────────────
 
   async createPage(
     admin: { graphql: (query: string, opts?: Record<string, unknown>) => Promise<Response> },
     productName: string,
-    templateSuffix: string
+    htmlBody: string
   ): Promise<{ handle: string }> {
     const title = `${productName} - AI Landing Page`;
 
@@ -382,17 +207,17 @@ Write in a persuasive, modern marketing style. Output only valid JSON.`;
         variables: {
           page: {
             title,
-            templateSuffix,
+            body: htmlBody,
             isPublished: true,
           },
         },
       })
     );
 
-    const json = await response.json() as {
+    const json = (await response.json()) as {
       data: {
         pageCreate: {
-          page: { id: string; handle: string; title: string; templateSuffix: string };
+          page: { id: string; handle: string; title: string };
           userErrors: Array<{ field: string; message: string }>;
         };
       };
@@ -404,48 +229,30 @@ Write in a persuasive, modern marketing style. Output only valid JSON.`;
     }
 
     const page = json.data?.pageCreate?.page;
+    if (!page) throw new Error("pageCreate returned no page.");
+
     console.log(`[LandingPageService] Page created: /pages/${page.handle}`);
     return { handle: page.handle };
   }
 
-  // ── 7. Orchestrate: Full Landing Page Generation ──────────────────────────
+  // ── 4. Orchestrate ──────────────────────────────────────────────────────────
 
   async generate(
     admin: { graphql: (query: string, opts?: Record<string, unknown>) => Promise<Response> },
     shopDomain: string,
-    accessToken: string,
+    _accessToken: string,
     input: LandingPageInput
   ): Promise<LandingPageResult> {
-    // Sanitize product name → URL-safe suffix
-    const templateSuffix = `ai-${input.productName
-      .toLowerCase()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 40)}`;
-
-    // 1. Get theme
-    const themeId = await this.getActiveThemeId(admin);
-
-    // 2. Generate AI content
     console.log("[LandingPageService] Generating AI content...");
     const content = await this.generateContent(input);
 
-    // 3. Upload image (if provided)
-    let shopifyImageUrl: string | undefined;
-    if (input.imageUrl) {
-      shopifyImageUrl = await this.uploadImageToShopify(admin, input.imageUrl, content.heroImageAlt);
-    }
+    const htmlBody = this.buildPageHtml(content, input.imageUrl);
 
-    // 4. Deploy theme template via REST Asset API
-    await this.deployThemeTemplate(shopDomain, accessToken, themeId, templateSuffix, content, shopifyImageUrl);
-
-    // 5. Create page resource
-    const { handle } = await this.createPage(admin, input.productName, templateSuffix);
+    const { handle } = await this.createPage(admin, input.productName, htmlBody);
 
     return {
       pageHandle: handle,
       previewUrl: `https://${shopDomain}/pages/${handle}`,
-      templateSuffix,
     };
   }
 }

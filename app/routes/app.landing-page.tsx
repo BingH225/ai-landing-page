@@ -67,7 +67,6 @@ export const action = async ({ request }: ActionFunctionArgs) => {
             success: true,
             previewUrl: result.previewUrl,
             pageHandle: result.pageHandle,
-            templateSuffix: result.templateSuffix,
         });
     } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
