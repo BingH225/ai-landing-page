@@ -131,9 +131,6 @@ export default function LandingPageRoute() {
                                 </Text>
                                 <InlineStack gap="200" align="start">
                                     <Badge tone="success">Live</Badge>
-                                    <Text as="span" variant="bodySm" tone="subdued">
-                                        Template: page.{actionData.templateSuffix}.json
-                                    </Text>
                                 </InlineStack>
                                 <Text as="p" variant="bodySm" tone="subdued">
                                     URL:{" "}
@@ -235,12 +232,12 @@ export default function LandingPageRoute() {
                                     {
                                         step: "1",
                                         title: "AI Content Generation",
-                                        desc: "GPT-4o crafts headlines, body copy, CTAs, and feature highlights tailored to your product.",
+                                        desc: "AI crafts headlines, body copy, CTAs, testimonials, and feature highlights tailored to your product.",
                                     },
                                     {
                                         step: "2",
-                                        title: "Theme Template Creation",
-                                        desc: "An OS 2.0 JSON template is silently written to your active theme via the GraphQL API.",
+                                        title: "Page Creation",
+                                        desc: "A beautifully styled landing page with urgency banners, testimonials, and SEO metadata is created.",
                                     },
                                     {
                                         step: "3",
