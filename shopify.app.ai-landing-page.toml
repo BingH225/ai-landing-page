@@ -18,3 +18,8 @@ scopes = "read_themes,write_content,write_files,write_themes"
 
 [auth]
 redirect_urls = [ "https://example.com/api/auth" ]
+
+[app_proxy]
+url = "https://example.com/proxy"
+subpath = "landing"
+prefix = "tools"

@@ -23,6 +23,13 @@ export interface LandingPageResult {
   previewUrl: string;
 }
 
+export interface AudienceParams {
+  audience?: string;
+  channel?: string;
+  interest?: string;
+  promo?: string;
+}
+
 // ─── Zod Schema ───────────────────────────────────────────────────────────────
 
 const LandingPageContentSchema = z.object({
@@ -176,9 +183,12 @@ export class LandingPageService {
 
   // ── 1. Generate AI Content (with proxy fallback) ────────────────────────────
 
-  async generateContent(input: LandingPageInput): Promise<LandingPageContent> {
+  async generateContent(input: LandingPageInput, audienceParams?: AudienceParams): Promise<LandingPageContent> {
     const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
     console.log(`[LandingPageService] Using model: ${model}`);
+    if (audienceParams) {
+      console.log(`[LandingPageService] Audience params:`, audienceParams);
+    }
 
     const systemPrompt = `You are an elite e-commerce copywriter and conversion rate optimization expert.
 Generate landing page content that is persuasive, modern, and designed for maximum conversions.
@@ -208,9 +218,33 @@ Guidelines:
 - SEO title should be optimized for search with target keywords
 - All copy should be in the same language as the product name`;
 
+    // Build audience-aware context
+    const audienceContext: string[] = [];
+    if (audienceParams?.audience) {
+      audienceContext.push(`Target audience: ${audienceParams.audience}. Tailor the tone, scenarios, and language specifically for this audience.`);
+    }
+    if (audienceParams?.channel) {
+      const channelMap: Record<string, string> = {
+        social: "This user came from social media — use punchy, emotional, shareable copy with strong hooks.",
+        google: "This user came from search — use benefit-focused, factual copy that answers their intent.",
+        email: "This user came from an email campaign — use warm, personal, exclusive-feeling copy.",
+      };
+      audienceContext.push(channelMap[audienceParams.channel] || `Traffic source: ${audienceParams.channel}. Adjust the copy style accordingly.`);
+    }
+    if (audienceParams?.interest) {
+      audienceContext.push(`User interest: ${audienceParams.interest}. Emphasize use cases and scenarios related to this interest.`);
+    }
+    if (audienceParams?.promo) {
+      audienceContext.push(`Active promotion: ${audienceParams.promo}. Work this promotion into the urgency text and CTA.`);
+    }
+
+    const audienceSection = audienceContext.length > 0
+      ? `\n\nPersonalization context:\n${audienceContext.join("\n")}`
+      : "";
+
     const userPrompt = `Create high-conversion landing page copy for:
 Product: ${input.productName}
-Key Selling Points: ${input.sellingPoints}
+Key Selling Points: ${input.sellingPoints}${audienceSection}
 
 Write in a persuasive, modern marketing style. Make every word count. Output only valid JSON.`;
 
@@ -259,7 +293,7 @@ Write in a persuasive, modern marketing style. Make every word count. Output onl
 
   // ── 2. Build Styled HTML Body ───────────────────────────────────────────────
 
-  private buildPageHtml(content: LandingPageContent, imageUrl?: string): string {
+  buildPageHtml(content: LandingPageContent, imageUrl?: string): string {
     const featuresHtml = content.features
       .map(
         (f) => `
@@ -440,5 +474,36 @@ Write in a persuasive, modern marketing style. Make every word count. Output onl
       pageHandle: handle,
       previewUrl: `https://${shopDomain}/pages/${handle}`,
     };
+  }
+
+  // ── 5. Generate standalone HTML (for App Proxy) ─────────────────────────────
+
+  async generateHtmlOnly(
+    input: LandingPageInput,
+    audienceParams?: AudienceParams
+  ): Promise<string> {
+    console.log("[LandingPageService] Generating personalized AI content (proxy)...");
+    const content = await this.generateContent(input, audienceParams);
+
+    const bodyHtml = this.buildPageHtml(content, input.imageUrl);
+
+    return `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(content.seoTitle)}</title>
+  <meta name="description" content="${escapeHtml(content.seoDescription)}">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, sans-serif; background: #fafafa; color: #111; }
+    a:hover { opacity: 0.9; transform: translateY(-1px); }
+    div[style*="flex"] > div:hover { transform: translateY(-4px); box-shadow: 0 8px 32px rgba(0,0,0,.1) !important; }
+  </style>
+</head>
+<body>
+  ${bodyHtml}
+</body>
+</html>`;
   }
 }

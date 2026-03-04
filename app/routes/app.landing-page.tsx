@@ -291,6 +291,52 @@ export default function LandingPageRoute() {
                             </Card>
                         </Box>
                     )}
+
+                    {/* App Proxy Info */}
+                    <Box paddingBlockStart="400">
+                        <Card>
+                            <BlockStack gap="400">
+                                <Text as="h2" variant="headingMd">
+                                    🔗 Personalized Landing Pages
+                                </Text>
+                                <Text as="p" variant="bodySm" tone="subdued">
+                                    Use App Proxy URLs to generate dynamic, personalized landing pages on-the-fly.
+                                    Each URL generates unique content based on the parameters.
+                                </Text>
+                                <Divider />
+                                <BlockStack gap="200">
+                                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                                        Base URL:
+                                    </Text>
+                                    <Box padding="200" background="bg-surface-secondary" borderRadius="200">
+                                        <Text as="p" variant="bodySm">
+                                            /tools/landing?product=...&points=...
+                                        </Text>
+                                    </Box>
+                                </BlockStack>
+                                <BlockStack gap="200">
+                                    <Text as="p" variant="bodySm" fontWeight="semibold">
+                                        Personalization params:
+                                    </Text>
+                                    <BlockStack gap="100">
+                                        {[
+                                            { param: "audience", example: "student, professional, parent" },
+                                            { param: "channel", example: "social, google, email" },
+                                            { param: "interest", example: "music, fitness, gaming" },
+                                            { param: "promo", example: "summer2025, newuser" },
+                                        ].map((item) => (
+                                            <InlineStack key={item.param} gap="200">
+                                                <Badge>{item.param}</Badge>
+                                                <Text as="span" variant="bodySm" tone="subdued">
+                                                    {item.example}
+                                                </Text>
+                                            </InlineStack>
+                                        ))}
+                                    </BlockStack>
+                                </BlockStack>
+                            </BlockStack>
+                        </Card>
+                    </Box>
                 </Layout.Section>
             </Layout>
         </Page>
